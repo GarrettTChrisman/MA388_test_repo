@@ -1,0 +1,237 @@
+---
+title: "Problem Set 4"
+author: "Daniel Baller"
+date: "1/27/2022"
+output:
+  word_document: default
+  html_document: default
+urlcolor: blue
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+
+library(Lahman)
+library(tidyverse)
+library(knitr)
+```
+
+**Cadet Name:** Garrett Chrisman
+
+**Instructions:** Type your answers to the questions below in the R Markdown file (.Rmd) provided. Knit the .Rmd file to a word or html document and submit a hard copy at the start of class on the lesson it is due.  If you will be missing class you can submit on Blackboard prior to the start of the lesson it is due (Note: if you are submitting on blackboard you must knit to word). This is an individual assignment; you must document any assistance in accordance with *Documentation of Academic Work*. Please submit a cover sheet and documentation with your knitted document.
+
+**Due:** Lesson 11
+
+### How many runs for a win?
+
+In this problem set, we will explore the effectiveness of the sacrifice bunt.  A bunt is a batted ball intentionally hit near home plate.  The goal of the sacrifice bunt is to advance any runners on base and typically results in the batter being out at first base (hence, the term 'sacrifice'). For more on the sacrifice bunt, see the video [here](https://www.youtube.com/watch?v=Vg1BRMz82Kc).  The sacrifice bunt used to be a common strategy, but has steadily become less popular.
+
+1. Plot the number of sacrifice bunts per game by year from 1954 to present.  Briefly discuss your plot in 2-3 sentences. (Hint: determine the total sacrifice bunts (variable SH) in the Batting data frame and join with total games played from the Team data frame.)
+
+```{r}
+bunt = Batting %>%
+  filter(yearID >= 1954)%>%
+  group_by(teamID,yearID)%>%
+  summarize(totalSH = sum(SH))
+
+gameBunt = Teams %>% 
+  filter(yearID >= 1954)%>%
+  mutate(games = W+L)%>%
+  select(games,yearID,teamID)%>%
+  group_by(teamID)
+
+both = left_join(bunt, gameBunt)
+
+both = both%>%
+  mutate(SHper = totalSH/games)
+  
+ggplot(data = both, aes(x = yearID, y = SHper)) + 
+  geom_jitter()+
+  geom_smooth(method = "lm")+
+  geom_smooth()+
+  labs( y = "number of sacrifice bunts per game", x = "year", title = "the number of sacrifice bunts per game by year from 1954 to present")
+  
+  
+```
+From the graph it is clear that SH are becoming less and less likely. There is a steady decrease through time be more recently there has been a sharp downward trend. This sharp trend shows that SH across all teams is far less common then SH for teams 50 years ago.
+
+2.  Next, we'll look at the 2011 season.  Import retrosheet play-by-play data for the 2011 season from our textbook's website using the code below.  Calculate the run expectancy matrix.
+
+```{r, cache = TRUE}
+site = "https://raw.githubusercontent.com/maxtoki/baseball_R/"
+fields <- read_csv(file = paste(site, "master/data/fields.csv", sep =""))
+all2011 <- read_csv(file = paste(site, "master/data/all2011.csv", sep = ""),
+                    col_names = pull(fields, Header),
+                    na = character())
+
+#create some new variables
+all2011 %>% 
+  mutate(RUNS = AWAY_SCORE_CT + HOME_SCORE_CT,
+         HALF.INNING = paste(GAME_ID, INN_CT, BAT_HOME_ID),
+         RUNS.SCORED = 
+           (BAT_DEST_ID > 3) + (RUN1_DEST_ID > 3) + 
+           (RUN2_DEST_ID > 3) + (RUN3_DEST_ID > 3)) ->
+  all2011
+
+
+#compute maximum total score for each half inning
+all2011 %>%
+  group_by(HALF.INNING) %>%
+  summarize(Outs.Inning = sum(EVENT_OUTS_CT),
+            Runs.Inning = sum(RUNS.SCORED),
+            Runs.Start = first(RUNS),
+            MAX.RUNS = Runs.Inning + Runs.Start) -> 
+  half_innings
+
+#compute runs scored in remainder of the inning (ROI)
+all2011 %>%
+  inner_join(half_innings, by = "HALF.INNING") %>%
+  mutate(RUNS.ROI = MAX.RUNS - RUNS) ->
+  all2011
+
+#create a new variable for the current state
+all2011 %>%
+  mutate(BASES = 
+           paste(ifelse(BASE1_RUN_ID > '',1,0),
+                 ifelse(BASE2_RUN_ID > '',1,0),
+                 ifelse(BASE3_RUN_ID > '',1,0), sep = ""),
+         STATE = paste(BASES, OUTS_CT)) ->
+  all2011
+
+#NRUNNER1 - indicator if 1st base is occupied after the play
+all2011 %>%
+  mutate(NRUNNER1 =
+           as.numeric(RUN1_DEST_ID==1 | BAT_DEST_ID == 1),
+         NRUNNER2 = 
+           as.numeric(RUN1_DEST_ID == 2 | RUN2_DEST_ID == 2 |
+                        BAT_DEST_ID == 2),
+         NRUNNER3 = 
+           as.numeric(RUN1_DEST_ID == 3 | RUN2_DEST_ID == 3 |
+                        RUN3_DEST_ID == 3 | BAT_DEST_ID == 3),
+         NOUTS = OUTS_CT + EVENT_OUTS_CT,
+         NEW.BASES = paste(NRUNNER1,NRUNNER2, NRUNNER3, sep = ""),
+         NEW.STATE = paste(NEW.BASES, NOUTS)) ->
+  all2011
+
+#only consider plays where the runners on base, outs, or runs scored changed
+all2011 %>%
+  filter((STATE != NEW.STATE) | (RUNS.SCORED > 0)) ->
+  all2011
+
+#use only complete half-innings
+all2011 %>%
+  filter(Outs.Inning == 3) -> all2011Complete
+
+#calculate expected number of runs scored for remainder of inning
+#for each bases/outs situation
+all2011Complete %>%
+  group_by(STATE) %>%
+  summarize(Mean = mean(RUNS.ROI)) %>%
+  mutate(Outs = substr(STATE,5,5)) %>%
+  arrange(Outs) -> RUNS
+
+RUNS_out = matrix(round(RUNS$Mean,2), 8,3)
+colnames(RUNS_out) = c("0 outs", "1 out", "2 outs")
+rownames(RUNS_out) = c("000","001","010","011",
+                       "100","101","110", "111")
+
+RUNS_out %>% 
+  kable()
+
+
+#calculate the run value of each play (p166)
+all2011 <- all2011 %>% 
+  left_join(select(RUNS, -Outs), by = "STATE") %>% 
+  rename(Runs.State = Mean) %>% 
+  left_join(select(RUNS, -Outs),
+            by = c("NEW.STATE" = "STATE")) %>% 
+  rename(Runs.New.State = Mean) %>% 
+  replace_na(list(Runs.New.State = 0)) %>% 
+  mutate(run_value = Runs.New.State - Runs.State + RUNS.SCORED)
+```
+
+
+3.  Next, investigate when bunts typically occurred in terms of the STATE variable. Briefly summarize your results in a paragraph. (hint: you can filter bunts using the BUNT_FL variable.)
+
+```{r}
+all2011%>%filter(BUNT_FL) -> buntState
+
+    buntState %>%
+      select(BUNT_FL,STATE)%>%
+      group_by(STATE)%>%
+      count()%>%
+      kable()
+
+
+```
+From the table, it is clear that the most bunts occur when there is a STATE equal to 100 0. With a runner on first and zeros outs, the attempt is to move the runner to 2nd and sacrifice the out. However, using the run matrix, going from 100 0 to 010 1 is 0.84 to 0.65. This is a .19 drop in run expectancy. This strategist attempts to minimize the expected loss from an out by at least moving the runner one base. If the runner were to strike out the value would drop .3 to a value of 0.50. Bunting only mitigates loss and offered no chance to gain run expediency. In the payer were to get a single the value would move up to 1.41. This is a very large increase of .57, over half of a run. Therefore, it makes senses after this data was discovered that bunts have become less and less popular. It Makes sense to go for at least a hit and a large increase in run value instead of trying to mitigate loss via a bunt.  
+
+4. Now, consider only those bunts occurring with a runner on first base and no outs (STATE = "100 0").  Plot a histogram of the run values.  In addition, calculate the mean run value and add it to the plot as a vertical line.
+
+```{r, fig.cap = "Run values for at bats with a runner on first and no outs - batter bunting (2011)"}
+meanROF = buntState %>% 
+  filter(STATE == "100 0")%>%
+  summarise(mean_run_value = mean(run_value))
+
+#ROF = all2011%>%
+#  filter(STATE == "100 0", BUNT_FL == "TRUE")%>%
+#  select(run_value)%>%
+#  round(3)
+
+meanROF
+
+ggplot(data = buntState, aes(run_value))+
+        geom_histogram()+
+        geom_vline(data = meanROF, color = "blue",aes(xintercept = mean_run_value), size = 1.0)+
+        annotate("text", 0.4,500, label = "Mean Run\nValue ", color = "blue")+
+        labs(x = "Run Vlaue", y = "Number of occurences with certain run values", title = "count for # of run values")
+```
+
+5. Next, consider plays with a runner on first base and no outs in which teams did not bunt.  Plot a histogram of the run values and the mean run value.  Briefly discuss differences with the result from the previous question.
+
+```{r, fig.cap = "Run values for at bats with a runner on first and no outs - batter swinging (2011)"}
+noBunt = all2011%>%
+  filter(STATE == "100 0", BUNT_FL == FALSE)%>%
+  select(run_value)%>%
+  round(3)
+
+meanROFnoBunt = noBunt %>%
+  summarize(mean_run_value2 = mean(run_value))
+meanROFnoBunt
+
+ggplot(data = noBunt, aes(run_value))+
+        geom_histogram()+
+        geom_vline(data = meanROFnoBunt, color = "blue",aes(xintercept = mean_run_value2), size = 1.5)+
+        annotate("text", 0.5,3000, label = "Mean Run\nValue", color = "blue")+
+        xlim(-1.0,2)+
+        labs(x = "Run Value", y = "count of instances of specific run vlaue", title = "Reasons to not bunt")
+```
+The mean for #4 is +0.115 and the mean for # 5 is -0.011. Therefore, given the same situation for a 100 0 STATE. Historically it makes sense to not bunt as there is a positive value over time. The same is not true for the bunt and proves bunting was not cool and never was cool. 
+
+
+6.  Investigate another aspect of the value of a sacrifice bunt.  For example, are there situations in which the data suggests a sacrifice is better strategy? Provide your R code and a brief summary of your results.
+
+
+```{r}
+  GoodbuntPer = all2011%>%
+    filter(BUNT_FL == TRUE)%>%
+    select(run_value)%>%
+    summarise(goodbunt = sum(run_value > 0), badBunt =  sum(run_value < 0), percentGood = goodbunt/(goodbunt+badBunt))%>%
+    kable()
+GoodbuntPer
+
+  HitAVG = Teams%>%
+  filter(yearID == 2011)%>%
+    group_by(teamID)%>%
+    select(H,AB,teamID)%>%
+    summarise(BA = H/AB)%>%
+    summarise(AVG = sum(BA)/30)%>%
+    kable()
+  
+HitAVG
+
+```
+The average for a positive run value from a bunt is 0.2356 and the average BA for the league in 2011 was 0.2549. Although not all hits result in a positive run value(ie pop fly/out at first), it would make more sense for the average player not to attempt a bunt and instead go full swing. With a positive run value success rate at 0.236, any hitter below that average should bunt. This is true for mainly pitchers who have low BA. But for the average player bunting does not make sense unless there is a specific reason to get a win by one run for advance a runner to third in a close game scenario. Furthermore, as we learned in earlier questions, moving a player from 1st to 2nd results in a negative run value and give the defense an "easy out". giving up an out is a lot more costly then instead letting the average player hit. This value is for the league but for the teams with a Higher BA, the difference gets larger and thus make it more piratical to let the player swing in the opportunity for a large run value instead of mitigating the loss of run value in the case of an out. TLDR bunting not cool unless you are really bad at hitting.
